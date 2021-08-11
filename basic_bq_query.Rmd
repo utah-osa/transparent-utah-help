@@ -1,0 +1,112 @@
+---
+title: "gcp-queries"
+author: Alexander Nielson
+output: html_document
+---
+
+# Set up correct Environment.
+
+there is a known bug with the bigrquery library where the a numeric string is getting converted to scientific notation due to some change by the google developers. So until the R guys get a permanent fix, just run this line to turn off the scientific notation in R. 
+
+```{r}
+options(scipen = 999)
+```
+
+## Libs
+```{r}
+library(bigrquery)
+library(DBI)
+library(tidyverse)
+library(data.table)
+```
+
+# Authhenticate / Connection
+```{r}
+#type bq_auth() into the console.
+
+# Or if you have a service account token (reccomended), then simply put in the key path.
+bq_auth(path = "D:/ut-sao-transparency-prod-3988539aa4d9.json")
+
+project_name <- 'ut-sao-transparency-prod'
+
+con <- dbConnect(
+  bigrquery::bigquery(),
+  project = project_name,
+  dataset = "transaction",
+  billing = project_name
+)
+```
+
+```{r}
+dbListTables(con)
+```
+
+
+#Query the entity_lookup table
+
+this is a small table so querying it will not incur significant costs, so use it first to make sure you understand the process before you query the bigger table.
+
+The process for querying can be broken down into three steps:
+
+Step 1: Write your query  and assign as a string
+```{r}
+q <- "
+      SELECT id, name, govt_lvl
+      FROM `transaction.entity_lookup`
+     "
+```
+
+Step 2: project the query costs. 
+```{r}
+projected_query <- bq_project_query(project_name, q)
+```
+
+Step 3: Execute the query.
+```{r}
+entity_lookup <- bq_table_download(projected_query)
+```
+
+Alternatively,if you already know the costs of a query and wish to simplify the steps, then you can run a query in one line using the standard DBI package.
+
+```{r}
+entity_lookup_2<- dbGetQuery(con, q)
+```
+
+# Querying the Transaction Table
+
+```{r}
+q <- "
+      SELECT fiscal_year, type, vendor_name, amount, fund1, fund2, program1, program2, function1, function2
+      FROM `transaction.transaction`
+      WHERE entity_name ='South Sanpete School District' and type='EX'
+      "
+```
+
+```{r}
+dt_ssd <- dbGetQuery(con, q)
+```
+
+Lets get the yearly total up to two fund levels
+```{r}
+dt_ssd %>%
+  group_by(fiscal_year,fund1,fund2) %>% 
+  summarize(net_amount  = sum(amount))
+```
+
+
+
+
+# Saving query results and objects
+
+Since everytime you query something you are charged (if you just ran the query its results will be stored as a temp table for a bit, but within a few hours or new session the costs will be incurred again), I reccomend that you save query results for further maniuplation.
+```{r}
+dt_ssd %>% saveRDS(paste0("dt_layton_",Sys.Date(),".RDS"))
+```
+or you can save it as a csv.
+
+```{r}
+dt_ssd %>% fwrite(paste0("dt_layton_",Sys.Date(),".csv"))
+```
+
+
+
