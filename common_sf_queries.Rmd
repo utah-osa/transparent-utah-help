@@ -1,0 +1,192 @@
+---
+title: "common_sf_queries"
+author: "Alexander Nielson"
+date: "8/17/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(salesforcer)
+library(magrittr)
+library(data.table)
+```
+
+
+```{r}
+sf_auth(username = "your_state_email@utah.gov",
+        password = 'your_salesforce_password',
+        security_token = 'your_salesforce_security_token')
+```
+
+# Query the Account (Entity) Table
+```{r}
+temp_soql <- paste0(" SELECT 
+                        Name,
+                        Id,
+                        Transparency_ID__c,
+                        Fiscal_Year_Begins__c,
+                        Expense_Revenue_Start_Date__c,
+                        Wage_Start_Date__c,
+                        RecordTypeId,
+                        Entity_Status__c,
+                        Transparency_Delinquency__c, 
+                        Transparency_Hold__c,
+                        RecordType.Name
+                        
+                      FROM Account
+                      
+                      WHERE RecordType.Name IN ('AOG',
+                          'City',
+                          'Community Reinvestment Agency',
+                          'Conservation District',
+                          'County',
+                          'District Health',
+                          'Housing',
+                          'Institution of Higher Education',
+                          'Independent/Quasi State Entity',
+                          'Interlocal',
+                          'Local and Special Service District',
+                          'Mental Health',
+                          'Redevelopment Agency/Project Area',
+                          'School District or Charter School',
+                          'State of Utah (agencies/depts/comp units/ etc.)',
+                          'Town')  
+                    ")
+
+sf_account <- sf_query(temp_soql)%>%
+  as.data.table() %>% 
+  .[,.( 
+    sf_name  = Name,
+    sf_id = Id,
+    aws_id = Transparency_ID__c,
+    fy_begin_date = Fiscal_Year_Begins__c,
+    exprev_start_date = Expense_Revenue_Start_Date__c,
+    py_start_date = Wage_Start_Date__c,
+    govt_lvl = RecordType.Name,
+    entity_status = Entity_Status__c,
+    delinquency_check = Transparency_Delinquency__c,
+    hold_check = Transparency_Hold__c
+        )] #%>% 
+    # .[!(sf_name %in% c(
+    #   'Intermountain Power Agency',
+    #   'test city 2',
+    #   'Utah Associated Municipal Power Systems',
+    #   'Utah Municipal Power Agency',
+    #   "My Account",
+    #   "salesforce.com",
+    #   "State of Utah",
+    #   "Anonymous"))
+    #   ] %>% 
+    # .[!(entity_status %in% c("Inactive", "Dissolved"))] %>% 
+    # .[!(sf_name=="Utah Transit Authority" &   govt_lvl == "State of Utah (agencies/depts/comp units/ etc.)") ] %>% 
+    # .[exprev_start_date < today() || is.na(exprev_start_date)]
+```
+
+
+# Last Week's Transparency Report
+
+```{r}
+#Get the most recent uploads date by finding the most frequent date in the last500 records.
+# NOTE! This isnt exactly correct if there are two reports on one day. Code 
+# later on fixes this by a simple rank algorithm 
+temp_soql <- paste0("
+                    SELECT CreatedDate
+                    FROM Transparency_Reporting__c
+                    ORDER BY CreatedDate DESC
+                    LIMIT 500")
+max_date <- sf_query(temp_soql) %>% as.data.table() %>% 
+  .[,created_date := CreatedDate %>% as.Date("%Y/%m/%d")] %>% 
+  .[,.(freq=.N),by=created_date] %>% 
+  .[freq==max(freq)] %>% 
+  .[["created_date"]]
+
+# Now get the other fields you want with the most recent date
+
+temp_soql <- paste0(" SELECT 
+                        Name,
+                        Account__c,
+                        Expenditure_Problem__c, 
+                        Revenue_Problem__c,
+                        Wage_Problem__c,
+                        CreatedDate,
+                        Status__c
+                        
+                      FROM Transparency_Reporting__c
+                      WHERE DAY_ONLY(CreatedDate)=",max_date,"
+                      
+                    ")
+
+sf_transparecy_reporting <- sf_query(temp_soql)%>%
+  as.data.table() %>%
+  .[,.(
+    report_date = Name,
+    created_date= CreatedDate,
+    sf_id = Account__c,
+    pr_miss_rev = Revenue_Problem__c,
+    pr_miss_exp = Expenditure_Problem__c, 
+    pr_miss_pay = Wage_Problem__c,
+    pr_t_status = Status__c
+  )] %>% 
+  # create a rank by created date and filter off the max rank to get the most recent report. This is for the fringe cases where two reports are uploaded on the same day, usually to fix erroneous status flips.
+  .[,created_date_rank := frank(created_date),
+    by=c("sf_id")] %>% 
+  .[,created_date_rank_max := max(created_date_rank),
+    by=c("sf_id")] %>% 
+  .[created_date_rank==created_date_rank_max] %>%
+  
+  .[,c("created_date_rank","created_date_rank_max"):=NULL]
+```
+
+# Batch Uploads
+```{r}
+temp_soql <- paste0(" 
+  SELECT 
+    Name,
+    Entity__c,
+    Upload_Date__c,
+    Status__c
+  FROM TransparencyUpload__c")
+
+sf_upload <- sf_query(temp_soql) %>%
+  as.data.table() %>%
+  .[,.(batch_id = Name,
+         sf_id = Entity__c,
+         upload_date = Upload_Date__c,
+         status = Status__c)]  
+  
+
+```
+
+# Exemption
+
+```{r}
+temp_soql <- paste0(" 
+SELECT 
+  Transparency_Exemption__c.Account__c,             
+  Transparency_Exemption__c.Transparency_type_exempted__c,
+  Transparency_Exemption__c.Recurring_Exemption__c,
+  Transparency_Exemption__c.Exemption_Start_Date__c,
+  Transparency_Exemption__c.Exemption_End_Date__c,
+  Transparency_Exemption__c.Permanent_or_Temporary__c,
+  Transparency_Exemption__c.Exemption_Reason__c
+FROM Transparency_Exemption__c
+WHERE IsDeleted = FALSE
+")
+
+sf_exemption <- sf_query(temp_soql) %>%
+  as.data.table() %>%
+  .[,.(
+        sf_id = Account__c,
+    exemp_type = Transparency_type_exempted__c,
+    recurring = Recurring_Exemption__c,
+    exemp_start = Exemption_Start_Date__c,
+    exemp_end = Exemption_End_Date__c,
+    perm_or_temp = Permanent_or_Temporary__c,
+    reason = Exemption_Reason__c
+  )]
+```
+
