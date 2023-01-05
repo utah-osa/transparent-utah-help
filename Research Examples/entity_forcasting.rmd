@@ -1,0 +1,171 @@
+
+# Load libraries
+```{r}
+library(bigrquery)
+library(DBI)
+library(tidyverse)
+```
+
+# Auth to GCP
+```{r}
+bq_auth() # you should usually select 0 to generate a new token
+```
+# Build odbc Connection
+```{r}
+project_name <- 'ut-sao-transparency-prod'
+
+con <- dbConnect(
+  bigrquery::bigquery(),
+  project = project_name,
+  dataset = "transaction",
+  billing = project_name
+)
+```
+
+# write and execute
+```{r}
+q <- "
+
+SELECT posting_date, 
+  amount,
+  moving_sum,
+  LAG (moving_sum, 365) OVER (ORDER BY posting_date) AS moving_sum_old_lag,
+  (moving_sum - LAG (moving_sum, 365) OVER (ORDER BY posting_date))/LAG (moving_sum, 365) OVER (ORDER BY posting_date) AS perc_diff
+
+FROM
+(
+  SELECT posting_date,
+    amount,
+    SUM(amount) OVER (ORDER BY posting_date ROWS BETWEEN 364 PRECEDING AND CURRENT ROW) AS moving_sum
+  FROM
+  (
+    SELECT entity_dates_possible_tab.posting_date,
+          daily_sum.amount,
+    
+          
+
+    FROM(
+    SELECT * FROM  UNNEST(
+        (SELECT GENERATE_DATE_ARRAY('2008-07-01', CURRENT_DATE) )
+      ) AS posting_date 
+    ) entity_dates_possible_tab
+    LEFT JOIN 
+      (
+        -- Get the daily sum by type
+        SELECT type, posting_date, SUM(amount) AS amount
+        FROM `ut-sao-transparency-prod.transaction.transaction`
+
+        WHERE type='RV' AND entity_name = 'State of Utah'
+          AND (
+          
+            SUBSTR(account_number,12,4) IN ('2480')
+            OR (
+              (REGEXP_CONTAINS(LOWER(cat1), r'sales') AND REGEXP_CONTAINS(LOWER(cat1), r'tax') ) OR
+              (REGEXP_CONTAINS(LOWER(cat2), r'sales') AND REGEXP_CONTAINS(LOWER(cat2), r'tax') ) OR
+              (REGEXP_CONTAINS(LOWER(cat3), r'sales') AND REGEXP_CONTAINS(LOWER(cat3), r'tax') ) OR
+              (REGEXP_CONTAINS(LOWER(cat4), r'sales') AND REGEXP_CONTAINS(LOWER(cat4), r'tax') ) OR
+              (REGEXP_CONTAINS(LOWER(cat5), r'sales') AND REGEXP_CONTAINS(LOWER(cat5), r'tax') )
+              )
+          )
+        GROUP BY type, posting_date
+      ) AS daily_sum ON entity_dates_possible_tab.posting_date = daily_sum.posting_date
+    
+  )
+)
+
+ORDER BY posting_date DESC
+      "
+tax <- dbGetQuery(con, q)
+```
+
+
+```{r}
+
+gg <- tax %>% 
+  filter(posting_date > '2010-07-01') %>%
+  ggplot( aes(x=posting_date, y=perc_diff)) +
+  geom_line() +
+  scale_x_date(date_breaks = "1 year",date_labels = "%Y") +
+  scale_y_continuous(labels=scales::percent_format()) +
+  labs(title="Percent Change vs Date",
+       subtitle="in Rolling 365 Day Sum - Property Tax for State of Utah",
+       x ="Date", 
+       y = "Percent Change")
+
+gg
+```
+
+
+
+```{r}
+q <- "
+
+SELECT posting_date, 
+  amount,
+  moving_sum,
+  LAG (moving_sum, 365) OVER (ORDER BY posting_date) AS moving_sum_old_lag,
+  (moving_sum - LAG (moving_sum, 365) OVER (ORDER BY posting_date))/LAG (moving_sum, 365) OVER (ORDER BY posting_date) AS perc_diff
+
+FROM
+(
+  SELECT posting_date,
+    amount,
+    SUM(amount) OVER (ORDER BY posting_date ROWS BETWEEN 364 PRECEDING AND CURRENT ROW) AS moving_sum
+  FROM
+  (
+    SELECT entity_dates_possible_tab.posting_date,
+          daily_sum.amount,
+    
+          
+
+    FROM(
+    SELECT * FROM  UNNEST(
+        (SELECT GENERATE_DATE_ARRAY('2008-07-01', CURRENT_DATE) )
+      ) AS posting_date 
+    ) entity_dates_possible_tab
+    LEFT JOIN 
+      (
+        -- Get the daily sum by type
+        SELECT type, posting_date, SUM(amount) AS amount
+        FROM `ut-sao-transparency-prod.transaction.transaction`
+
+        WHERE type='RV' AND entity_name = 'State of Utah'
+          AND (
+              (REGEXP_CONTAINS(LOWER(cat1), r'income') AND REGEXP_CONTAINS(LOWER(cat1), r'tax') ) OR
+              (REGEXP_CONTAINS(LOWER(cat2), r'income') AND REGEXP_CONTAINS(LOWER(cat2), r'tax') ) OR
+              (REGEXP_CONTAINS(LOWER(cat3), r'income') AND REGEXP_CONTAINS(LOWER(cat3), r'tax') ) OR
+              (REGEXP_CONTAINS(LOWER(cat4), r'income') AND REGEXP_CONTAINS(LOWER(cat4), r'tax') ) OR
+              (REGEXP_CONTAINS(LOWER(cat5), r'income') AND REGEXP_CONTAINS(LOWER(cat5), r'tax') )
+              )
+          
+        GROUP BY type, posting_date
+      ) AS daily_sum ON entity_dates_possible_tab.posting_date = daily_sum.posting_date
+    
+  )
+)
+
+ORDER BY posting_date DESC
+      "
+inc_tax <- dbGetQuery(con, q)
+```
+
+```{r}
+gg <- inc_tax %>% 
+  filter(posting_date > '2010-07-01') %>%
+  ggplot( aes(x=posting_date, y=perc_diff)) +
+  geom_line() +
+  scale_x_date(date_breaks = "1 year",date_labels = "%Y") +
+  scale_y_continuous(labels=scales::percent_format()) +
+  labs(title="Percent Change vs Date",
+       subtitle="in Rolling 365 Day Sum - Income Tax for State of Utah",
+       x ="Date", 
+       y = "Percent Change")
+
+gg
+```
+
+
+
+
+
+

@@ -17,15 +17,14 @@ options(scipen = 999)
 library(bigrquery)
 library(DBI)
 library(tidyverse)
-library(data.table)
 ```
 
-# Authhenticate / Connection
+# Authenticate to Big Query
 ```{r}
-#type bq_auth() into the console.
+#Option 1: type bq_auth() into the console and log in with your email.
 
-# Or if you have a service account token (reccomended), then simply put in the key path.
-bq_auth(path = "D:/ut-sao-transparency-prod-3988539aa4d9.json")
+# Option2: If you have a service account token (reccomended), then simply put in the key path like this:
+bq_auth(path = "D:/gcp-keys/ut-sao-transparency-prod-5a8476ec5fea.json")
 
 project_name <- 'ut-sao-transparency-prod'
 
@@ -37,31 +36,23 @@ con <- dbConnect(
 )
 ```
 
-```{r}
-dbListTables(con)
-```
-
-
-#Query the entity_lookup table
-
-this is a small table so querying it will not incur significant costs, so use it first to make sure you understand the process before you query the bigger table.
+# How to Query
 
 The process for querying can be broken down into three steps:
 
-Step 1: Write your query  and assign as a string
+Step 1: Write your query and assign as a string
 ```{r}
-q <- "
-      SELECT id, name, govt_lvl
-      FROM `transaction.entity_lookup`
-     "
+q <- "SELECT DISTINCT entity_name
+FROM transaction.transaction
+ORDER BY entity_name"
 ```
 
-Step 2: project the query costs. 
+Step 2: Project the query costs. 
 ```{r}
 projected_query <- bq_project_query(project_name, q)
 ```
 
-Step 3: Execute the query.
+Step 3: Execute the query and download
 ```{r}
 entity_lookup <- bq_table_download(projected_query)
 ```
@@ -69,44 +60,61 @@ entity_lookup <- bq_table_download(projected_query)
 Alternatively,if you already know the costs of a query and wish to simplify the steps, then you can run a query in one line using the standard DBI package.
 
 ```{r}
-entity_lookup_2<- dbGetQuery(con, q)
+entity_lookup_2 <- dbGetQuery(con, q)
 ```
 
-# Querying the Transaction Table
+# Example 2: More Complex Query
 
+Lets imagine I want all the expense transaction from a school district ("South Sanpete School District" was used since it is small)
+
+I want to see what funds, programs, and function codes have the highest spending. I would consult the table schema, then write my query like this:
 ```{r}
 q <- "
-      SELECT fiscal_year, type, vendor_name, amount, fund1, fund2, program1, program2, function1, function2
+      SELECT  fiscal_year, 
+              type, 
+              vendor_name, 
+              amount, 
+              fund1, 
+              fund2, 
+              program1, 
+              program2, 
+              function1, 
+              function2
       FROM `transaction.transaction`
-      WHERE entity_name ='South Sanpete School District' and type='EX'
+      WHERE entity_name ='South Sanpete School District' 
+        AND type='EX'
       "
 ```
 
+next I execute the query
 ```{r}
 dt_ssd <- dbGetQuery(con, q)
 ```
 
-Lets get the yearly total up to two fund levels
+Lets now find the net expense for each year and by eacj fund1 and fund2 level
 ```{r}
 dt_ssd %>%
-  group_by(fiscal_year,fund1,fund2) %>% 
-  summarize(net_amount  = sum(amount))
+  group_by(fiscal_year, fund1, fund2) %>% 
+  summarize(net_amount  = sum(amount)) 
 ```
 
 
+# Saving Large Queries: 
 
+Since everytime you query something you are charged, I recommend saving large queries to your local file system.
 
-# Saving query results and objects
-
-Since everytime you query something you are charged (if you just ran the query its results will be stored as a temp table for a bit, but within a few hours or new session the costs will be incurred again), I reccomend that you save query results for further maniuplation.
+Saving your dataframe/tibble as an RDS object using "saveRDS" is encouraged. Here is an example: 
 ```{r}
 dt_ssd %>% saveRDS(paste0("dt_layton_",Sys.Date(),".RDS"))
 ```
-or you can save it as a csv.
 
+then to read it back in you can run "readRDS"
 ```{r}
-dt_ssd %>% fwrite(paste0("dt_layton_",Sys.Date(),".csv"))
+dt_ssd <- readRDS(paste0("dt_layton_",Sys.Date(),".RDS"))
 ```
 
 
-
+or you can save it as a csv.
+```{r}
+dt_ssd %>% write_csv(paste0("dt_layton_",Sys.Date(),".csv"))
+```
